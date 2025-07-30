@@ -57,20 +57,30 @@ func (g *Graceful) Run(ctx context.Context) error {
 
 	select {
 	case <-sigs:
-		g.l.Info("graceful.Run: service shutting down gracefully, press Ctrl+C again to force")
+		g.l.Info("graceful.Run: service shutting down gracefully", "service", g.srv.Name())
 
 		sdCtx, sdCancel := context.WithTimeout(context.Background(), g.stopTimeout)
 		defer sdCancel()
 
-		err := g.srv.Stop(sdCtx)
-		if err != nil {
-			return fmt.Errorf("graceful.Run: service %s forced to shutdown: %w",
-				g.srv.Name(), err)
+		cleanCh := make(chan error, 1)
+		go func() {
+			cleanCh <- g.srv.Stop(sdCtx)
+		}()
+
+		for {
+			select {
+			case <-sdCtx.Done():
+				return fmt.Errorf("graceful.Run: service %s gracefully shutdown timeout: %w",
+					g.srv.Name(), sdCtx.Err())
+			case err := <-cleanCh:
+				if err != nil {
+					return fmt.Errorf("graceful.Run: an error occurred while shutting down the service %s: %w",
+						g.srv.Name(), err)
+				}
+				g.l.Info("graceful.Run: service gracefully stopped", "service", g.srv.Name())
+				return nil
+			}
 		}
-
-		g.l.Info("graceful.Run: service gracefully stopped", "name", g.srv.Name())
-		return nil
-
 	case err := <-errCh:
 		return fmt.Errorf("graceful.Run: service %s start failed: %w",
 			g.srv.Name(), err)
